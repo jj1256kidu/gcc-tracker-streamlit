@@ -2,13 +2,9 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import re
+import json
+from urllib.parse import quote_plus
 import time
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # Page Configuration
 st.set_page_config(
@@ -26,158 +22,151 @@ st.markdown("""
         border: 1px solid #e0e0e0;
         border-radius: 5px;
         margin: 10px 0;
+        background-color: #f8f9fa;
     }
     .person-card {
         padding: 15px;
         border: 1px solid #f0f0f0;
         border-radius: 5px;
         margin: 5px 0;
+        background-color: white;
     }
-    .highlight {
-        background-color: #f0f8ff;
-        padding: 2px 5px;
-        border-radius: 3px;
+    .search-result {
+        margin: 10px 0;
+        padding: 10px;
+        border-left: 3px solid #007bff;
     }
     </style>
 """, unsafe_allow_html=True)
 
-def search_company(company_name):
-    """Search company information using Google"""
-    try:
-        # Set up Chrome options for headless browsing
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        
-        # Search for company website
-        driver.get(f"https://www.google.com/search?q={company_name} company website")
-        website = driver.find_element(By.CSS_SELECTOR, "cite").text
-        
-        # Search for LinkedIn page
-        driver.get(f"https://www.google.com/search?q={company_name} linkedin company")
-        linkedin_url = ""
-        links = driver.find_elements(By.CSS_SELECTOR, "cite")
-        for link in links:
-            if "linkedin.com/company" in link.text:
-                linkedin_url = link.text
-                break
-        
-        # Get company information from LinkedIn
-        if linkedin_url:
-            driver.get(linkedin_url)
-            time.sleep(2)  # Wait for page to load
-            
-            try:
-                company_info = {
-                    'name': company_name,
-                    'website': website,
-                    'linkedin': linkedin_url,
-                    'description': driver.find_element(By.CLASS_NAME, "about-us__description").text,
-                    'industry': driver.find_element(By.CLASS_NAME, "company-industries").text,
-                    'headquarters': driver.find_element(By.CLASS_NAME, "company-location").text
-                }
-            except:
-                company_info = {
-                    'name': company_name,
-                    'website': website,
-                    'linkedin': linkedin_url,
-                    'description': "Description not found",
-                    'industry': "Industry not found",
-                    'headquarters': "Location not found"
-                }
-        
-        driver.quit()
-        return company_info
+@st.cache_data(ttl=3600)
+def search_company_info(company_name):
+    """Search company information using DuckDuckGo"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
+    try:
+        # Search for company website and LinkedIn
+        search_query = quote_plus(f"{company_name} company website linkedin")
+        url = f"https://api.duckduckgo.com/?q={search_query}&format=json"
+        response = requests.get(url)
+        results = response.json()
+
+        company_info = {
+            'name': company_name,
+            'website': None,
+            'linkedin_url': None,
+            'description': None,
+            'locations': []
+        }
+
+        # Process search results
+        if 'Results' in results:
+            for result in results['Results']:
+                if not company_info['website'] and 'company' in result['FirstURL'].lower():
+                    company_info['website'] = result['FirstURL']
+                if not company_info['linkedin_url'] and 'linkedin.com/company' in result['FirstURL'].lower():
+                    company_info['linkedin_url'] = result['FirstURL']
+
+        # Get additional info from Wikipedia if available
+        if 'Abstract' in results and results['Abstract']:
+            company_info['description'] = results['Abstract']
+
+        return company_info
+
     except Exception as e:
         st.error(f"Error searching company: {str(e)}")
         return None
 
-def search_key_people(company_linkedin_url):
-    """Search key people from company's LinkedIn page"""
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get(f"{company_linkedin_url}/people")
-        time.sleep(2)
-        
-        people = []
-        people_elements = driver.find_elements(By.CLASS_NAME, "employee-card")
-        
-        for element in people_elements[:10]:  # Get first 10 people
-            try:
-                name = element.find_element(By.CLASS_NAME, "employee-name").text
-                title = element.find_element(By.CLASS_NAME, "employee-title").text
-                linkedin_url = element.find_element(By.CLASS_NAME, "employee-link").get_attribute("href")
-                location = element.find_element(By.CLASS_NAME, "employee-location").text
-                
-                people.append({
-                    'name': name,
-                    'title': title,
-                    'linkedin': linkedin_url,
-                    'location': location
-                })
-            except:
-                continue
-        
-        driver.quit()
-        return people
+@st.cache_data(ttl=3600)
+def search_people(company_name):
+    """Search key people using DuckDuckGo"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
+    try:
+        search_query = quote_plus(f"{company_name} CEO CTO CFO linkedin")
+        url = f"https://api.duckduckgo.com/?q={search_query}&format=json"
+        response = requests.get(url)
+        results = response.json()
+
+        people = []
+        if 'Results' in results:
+            for result in results['Results']:
+                if 'linkedin.com/in/' in result['FirstURL'].lower():
+                    person = {
+                        'name': result.get('Text', '').split('-')[0].strip(),
+                        'title': result.get('Text', '').split('-')[1].strip() if '-' in result.get('Text', '') else '',
+                        'linkedin_url': result['FirstURL']
+                    }
+                    people.append(person)
+
+        return people[:5]  # Return top 5 results
+
     except Exception as e:
         st.error(f"Error searching people: {str(e)}")
         return []
 
 def main():
-    st.title("GCC Company Search")
+    st.title("🏢 GCC Company Search")
     
     # Search bar
-    company_name = st.text_input("Enter company name to search")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        company_name = st.text_input("Enter company name", placeholder="Example: Microsoft, Google, etc.")
+    with col2:
+        st.write("")
+        st.write("")
+        search_button = st.button("🔍 Search")
     
-    if company_name:
-        with st.spinner('Searching company information...'):
-            company_info = search_company(company_name)
-            
-            if company_info:
-                # Display company information
-                st.header("Company Information")
-                with st.container():
+    if company_name and search_button:
+        # Create tabs
+        tab1, tab2 = st.tabs(["Company Info", "Key People"])
+        
+        with tab1:
+            with st.spinner('Searching company information...'):
+                company_info = search_company_info(company_name)
+                
+                if company_info:
                     st.markdown(f"""
                     <div class="company-info">
-                        <h3>{company_info['name']}</h3>
-                        <p><strong>Website:</strong> <a href="{company_info['website']}" target="_blank">{company_info['website']}</a></p>
-                        <p><strong>LinkedIn:</strong> <a href="{company_info['linkedin']}" target="_blank">{company_info['linkedin']}</a></p>
-                        <p><strong>Industry:</strong> {company_info['industry']}</p>
-                        <p><strong>Headquarters:</strong> {company_info['headquarters']}</p>
-                        <p><strong>Description:</strong> {company_info['description']}</p>
+                        <h2>{company_info['name']}</h2>
+                        <p><strong>🌐 Website:</strong> <a href="{company_info['website']}" target="_blank">{company_info['website']}</a></p>
+                        <p><strong>👥 LinkedIn:</strong> <a href="{company_info['linkedin_url']}" target="_blank">{company_info['linkedin_url']}</a></p>
+                        <p><strong>📝 Description:</strong> {company_info['description']}</p>
                     </div>
                     """, unsafe_allow_html=True)
+                else:
+                    st.warning("No company information found")
+        
+        with tab2:
+            with st.spinner('Searching key people...'):
+                people = search_people(company_name)
                 
-                # Search for key people
-                st.header("Key People")
-                with st.spinner('Searching key people...'):
-                    people = search_key_people(company_info['linkedin'])
-                    
-                    if people:
-                        for person in people:
-                            st.markdown(f"""
-                            <div class="person-card">
-                                <h4>{person['name']}</h4>
-                                <p><strong>Title:</strong> {person['title']}</p>
-                                <p><strong>Location:</strong> {person['location']}</p>
-                                <p><strong>LinkedIn:</strong> <a href="{person['linkedin']}" target="_blank">{person['linkedin']}</a></p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.info("No key people information found")
-            else:
-                st.error("Company information not found")
+                if people:
+                    for person in people:
+                        st.markdown(f"""
+                        <div class="person-card">
+                            <h3>{person['name']}</h3>
+                            <p><strong>🎯 Title:</strong> {person['title']}</p>
+                            <p><strong>🔗 LinkedIn:</strong> <a href="{person['linkedin_url']}" target="_blank">View Profile</a></p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.warning("No key people information found")
+
+    # Add information about usage
+    with st.expander("ℹ️ How to use"):
+        st.markdown("""
+        1. Enter the company name in the search bar
+        2. Click the Search button
+        3. View company information in the 'Company Info' tab
+        4. View key people information in the 'Key People' tab
+        
+        Note: The search results are cached for 1 hour to improve performance.
+        """)
 
 if __name__ == "__main__":
     main()
