@@ -66,160 +66,162 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class CompanySearcher:
-    def __init__(self):
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
-
-    @st.cache_data(ttl=3600)
-    def search_company(self, company_name):
-        """Search for company information"""
-        try:
-            search_queries = [
-                f"{company_name} careers india",
-                f"{company_name} office locations india",
-                f"{company_name} india development center",
-                f"{company_name} india tech hub",
-                f"{company_name} india headquarters",
-                f"{company_name} india jobs linkedin",
-                f"{company_name} india engineering"
-            ]
-            
-            company_info = {
-                'name': company_name,
-                'website': None,
-                'linkedin': None,
-                'description': None,
-                'locations': set(),
-                'found_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            for query in search_queries:
-                url = f"https://www.google.com/search?q={quote(query)}"
-                response = self.session.get(url, timeout=10)
-                
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-                    
-                    # Extract links
-                    for result in soup.find_all('div', {'class': 'g'}):
-                        link = result.find('a')
-                        if not link:
-                            continue
-                            
-                        href = link.get('href', '')
-                        
-                        # Find company profiles
-                        if 'linkedin.com/company' in href and not company_info['linkedin']:
-                            company_info['linkedin'] = href
-                        elif any(domain in href for domain in ['.com', '.in', '.co.in']):
-                            if company_name.lower() in href.lower() and not company_info['website']:
-                                company_info['website'] = href
-                    
-                    # Extract description
-                    desc = soup.find('div', {'class': ['VwiC3b', 'yXK7lf']})
-                    if desc and not company_info['description']:
-                        text = desc.text.strip()
-                        if len(text) > 100:
-                            company_info['description'] = text
-                    
-                    # Find locations
-                    city_variants = {
-                        'Bangalore': ['bangalore', 'bengaluru', 'blr'],
-                        'Hyderabad': ['hyderabad', 'hyd'],
-                        'Pune': ['pune'],
-                        'Chennai': ['chennai', 'madras'],
-                        'Mumbai': ['mumbai', 'bombay'],
-                        'Delhi NCR': ['delhi', 'new delhi', 'gurgaon', 'gurugram', 'noida'],
-                    }
-                    
-                    page_text = soup.get_text().lower()
-                    for city, variants in city_variants.items():
-                        if any(variant in page_text for variant in variants):
-                            company_info['locations'].add(city)
-                
-                time.sleep(1)
-            
-            company_info['locations'] = list(company_info['locations'])
-            return company_info if company_info['linkedin'] or company_info['website'] else None
-            
-        except Exception as e:
-            st.error(f"Error searching company: {str(e)}")
-            return None
-
-    @st.cache_data(ttl=3600)
-    def search_people(self, company_name):
-        """Search for company executives"""
-        executives = []
-        
-        search_patterns = [
-            f"{company_name} india managing director linkedin",
-            f"{company_name} india director linkedin",
-            f"{company_name} india head linkedin",
-            f"{company_name} india engineering head linkedin",
-            f"{company_name} india tech lead linkedin",
-            f"{company_name} india engineering manager linkedin",
-            f"{company_name} india vice president linkedin"
+# Cache the search functions at module level
+@st.cache_data(ttl=3600)
+def search_company_info(company_name):
+    """Search for company information"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    
+    try:
+        search_queries = [
+            f"{company_name} careers india",
+            f"{company_name} office locations india",
+            f"{company_name} india development center",
+            f"{company_name} india tech hub",
+            f"{company_name} india headquarters",
+            f"{company_name} india jobs linkedin",
+            f"{company_name} india engineering"
         ]
         
-        try:
-            for query in search_patterns:
-                url = f"https://www.google.com/search?q={quote(query)}"
-                response = self.session.get(url, timeout=10)
+        company_info = {
+            'name': company_name,
+            'website': None,
+            'linkedin': None,
+            'description': None,
+            'locations': set(),
+            'found_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        for query in search_queries:
+            url = f"https://www.google.com/search?q={quote(query)}"
+            response = session.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
                 
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-                    
-                    for result in soup.find_all('div', class_='g'):
-                        link = result.find('a')
-                        title = result.find('h3')
+                # Extract links
+                for result in soup.find_all('div', {'class': 'g'}):
+                    link = result.find('a')
+                    if not link:
+                        continue
                         
-                        if link and title and 'linkedin.com/in/' in link.get('href', ''):
-                            text = title.text
-                            if '-' in text:
-                                name, position = text.split('-', 1)
-                                
-                                # Categorize role
-                                role_category = 'Other'
-                                position_lower = position.lower()
-                                
-                                if any(word in position_lower for word in ['director', 'managing']):
-                                    role_category = 'Director'
-                                elif any(word in position_lower for word in ['vp', 'vice president']):
-                                    role_category = 'VP'
-                                elif any(word in position_lower for word in ['head', 'leader']):
-                                    role_category = 'Head'
-                                elif any(word in position_lower for word in ['manager', 'lead']):
-                                    role_category = 'Manager'
-                                
-                                # Avoid duplicates
-                                if not any(e['name'].lower() == name.strip().lower() for e in executives):
-                                    executives.append({
-                                        'name': name.strip(),
-                                        'role': position.strip(),
-                                        'category': role_category,
-                                        'linkedin_url': link.get('href'),
-                                        'company': company_name
-                                    })
+                    href = link.get('href', '')
+                    
+                    if 'linkedin.com/company' in href and not company_info['linkedin']:
+                        company_info['linkedin'] = href
+                    elif any(domain in href for domain in ['.com', '.in', '.co.in']):
+                        if company_name.lower() in href.lower() and not company_info['website']:
+                            company_info['website'] = href
                 
-                time.sleep(1)
+                # Extract description
+                desc = soup.find('div', {'class': ['VwiC3b', 'yXK7lf']})
+                if desc and not company_info['description']:
+                    text = desc.text.strip()
+                    if len(text) > 100:
+                        company_info['description'] = text
+                
+                # Find locations
+                city_variants = {
+                    'Bangalore': ['bangalore', 'bengaluru', 'blr'],
+                    'Hyderabad': ['hyderabad', 'hyd'],
+                    'Pune': ['pune'],
+                    'Chennai': ['chennai', 'madras'],
+                    'Mumbai': ['mumbai', 'bombay'],
+                    'Delhi NCR': ['delhi', 'new delhi', 'gurgaon', 'gurugram', 'noida'],
+                }
+                
+                page_text = soup.get_text().lower()
+                for city, variants in city_variants.items():
+                    if any(variant in page_text for variant in variants):
+                        company_info['locations'].add(city)
             
-            return pd.DataFrame(executives) if executives else pd.DataFrame()
+            time.sleep(1)
+        
+        company_info['locations'] = list(company_info['locations'])
+        return company_info if company_info['linkedin'] or company_info['website'] else None
+        
+    except Exception as e:
+        st.error(f"Error searching company: {str(e)}")
+        return None
+
+@st.cache_data(ttl=3600)
+def search_people_info(company_name):
+    """Search for company executives"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    
+    executives = []
+    search_patterns = [
+        f"{company_name} india managing director linkedin",
+        f"{company_name} india director linkedin",
+        f"{company_name} india head linkedin",
+        f"{company_name} india engineering head linkedin",
+        f"{company_name} india tech lead linkedin",
+        f"{company_name} india engineering manager linkedin",
+        f"{company_name} india vice president linkedin"
+    ]
+    
+    try:
+        for query in search_patterns:
+            url = f"https://www.google.com/search?q={quote(query)}"
+            response = session.get(url, timeout=10)
             
-        except Exception as e:
-            st.error(f"Error searching people: {str(e)}")
-            return pd.DataFrame()
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                for result in soup.find_all('div', class_='g'):
+                    link = result.find('a')
+                    title = result.find('h3')
+                    
+                    if link and title and 'linkedin.com/in/' in link.get('href', ''):
+                        text = title.text
+                        if '-' in text:
+                            name, position = text.split('-', 1)
+                            
+                            # Categorize role
+                            role_category = 'Other'
+                            position_lower = position.lower()
+                            
+                            if any(word in position_lower for word in ['director', 'managing']):
+                                role_category = 'Director'
+                            elif any(word in position_lower for word in ['vp', 'vice president']):
+                                role_category = 'VP'
+                            elif any(word in position_lower for word in ['head', 'leader']):
+                                role_category = 'Head'
+                            elif any(word in position_lower for word in ['manager', 'lead']):
+                                role_category = 'Manager'
+                            
+                            # Avoid duplicates
+                            if not any(e['name'].lower() == name.strip().lower() for e in executives):
+                                executives.append({
+                                    'name': name.strip(),
+                                    'role': position.strip(),
+                                    'category': role_category,
+                                    'linkedin_url': link.get('href'),
+                                    'company': company_name
+                                })
+            
+            time.sleep(1)
+        
+        return pd.DataFrame(executives) if executives else pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"Error searching people: {str(e)}")
+        return pd.DataFrame()
 
 def main():
     st.title("🏢 India Tech Center Tracker")
-    
-    # Initialize searcher
-    searcher = CompanySearcher()
     
     # Search interface
     col1, col2 = st.columns([3,1])
@@ -248,11 +250,11 @@ def main():
             
             # Search company info
             progress.progress(25)
-            company_info = searcher.search_company(company_input)
+            company_info = search_company_info(company_input)
             
             # Search people
             progress.progress(75)
-            people_df = searcher.search_people(company_input)
+            people_df = search_people_info(company_input)
             
             progress.progress(100)
             
