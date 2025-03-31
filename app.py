@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-from urllib.parse import quote_plus
+import time
 
 # Page Configuration
 st.set_page_config(
@@ -14,179 +14,173 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* Search box styling */
-    .search-container {
+    .search-box {
         margin: 20px 0;
-        padding: 20px;
-        background-color: #f8f9fa;
-        border-radius: 10px;
     }
-    
-    /* Result card styling */
     .result-card {
+        background-color: white;
         padding: 15px;
         margin: 10px 0;
-        border-left: 4px solid #007bff;
-        background-color: white;
-        border-radius: 4px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
     }
-    
-    /* Person card styling */
-    .person-card {
+    .person-info {
+        background-color: #f8f9fa;
         padding: 10px;
         margin: 5px 0;
-        background-color: #f8f9fa;
-        border-radius: 4px;
+        border-radius: 5px;
     }
-    
-    .designation {
-        color: #666;
-        font-size: 0.9em;
-    }
-    
-    .linkedin-link {
-        color: #0077b5;
+    .linkedin-button {
+        color: #0a66c2;
         text-decoration: none;
     }
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=1800)
-def search_company_and_people(query):
-    """Search for company and people information"""
+def get_company_info(company_name):
+    """Get company information using custom search"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     
-    results = {
-        'company_info': [],
-        'people': []
-    }
-    
     try:
-        # Search for company
-        company_search = requests.get(
-            f"https://www.google.com/search?q={quote_plus(f'{query} company gcc linkedin')}",
-            headers=headers
-        )
-        company_soup = BeautifulSoup(company_search.text, 'html.parser')
+        # Search for company LinkedIn page
+        search_url = f"https://www.google.com/search?q={company_name}+company+linkedin+gcc"
+        response = requests.get(search_url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Search for people
-        people_search = requests.get(
-            f"https://www.google.com/search?q={quote_plus(f'{query} executives leadership team linkedin')}",
-            headers=headers
-        )
-        people_soup = BeautifulSoup(people_search.text, 'html.parser')
+        company_info = {
+            'name': company_name,
+            'linkedin_url': '',
+            'website': '',
+            'description': ''
+        }
         
-        # Extract company information
-        for result in company_soup.find_all('div', class_='g'):
-            link = result.find('a')
-            if link and 'linkedin.com/company' in link.get('href', ''):
-                title = result.find('h3')
-                snippet = result.find('div', class_='VwiC3b')
-                if title and snippet:
-                    results['company_info'].append({
-                        'name': title.text,
-                        'description': snippet.text,
-                        'linkedin_url': link.get('href')
-                    })
+        # Find LinkedIn URL
+        for link in soup.find_all('a'):
+            href = str(link.get('href', ''))
+            if 'linkedin.com/company' in href:
+                company_info['linkedin_url'] = href
+                break
         
-        # Extract people information
-        for result in people_soup.find_all('div', class_='g'):
-            link = result.find('a')
-            if link and 'linkedin.com/in' in link.get('href', ''):
-                title = result.find('h3')
-                snippet = result.find('div', class_='VwiC3b')
-                if title and snippet:
-                    # Extract name and designation
-                    full_title = title.text.split('-')
-                    name = full_title[0].strip()
-                    designation = full_title[1].strip() if len(full_title) > 1 else "Executive"
-                    
-                    results['people'].append({
-                        'name': name,
-                        'designation': designation,
-                        'linkedin_url': link.get('href')
-                    })
+        # Find company website
+        search_url = f"https://www.google.com/search?q={company_name}+company+website"
+        response = requests.get(search_url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        return results
+        for link in soup.find_all('a'):
+            href = str(link.get('href', ''))
+            if not any(x in href for x in ['google', 'linkedin', 'facebook', 'twitter']):
+                if company_name.lower() in href.lower():
+                    company_info['website'] = href
+                    break
+        
+        # Find description
+        for div in soup.find_all('div', {'class': ['VwiC3b', 'yXK7lf']}):
+            if len(div.text) > 50:
+                company_info['description'] = div.text
+                break
+        
+        return company_info
     
     except Exception as e:
-        st.error(f"Search error: {str(e)}")
-        return results
+        st.error(f"Error fetching company info: {str(e)}")
+        return None
+
+def get_people_info(company_name):
+    """Get key people information"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    people = []
+    search_terms = [
+        f"{company_name} CEO linkedin",
+        f"{company_name} CTO linkedin",
+        f"{company_name} Founder linkedin",
+        f"{company_name} Director linkedin",
+        f"{company_name} VP linkedin"
+    ]
+    
+    try:
+        for term in search_terms:
+            search_url = f"https://www.google.com/search?q={term}"
+            response = requests.get(search_url, headers=headers)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            for result in soup.find_all('div', {'class': ['g', 'tF2Cxc']}):
+                title = result.find('h3')
+                if title and 'linkedin.com/in/' in str(result):
+                    name_parts = title.text.split('-')
+                    if len(name_parts) >= 2:
+                        person = {
+                            'name': name_parts[0].strip(),
+                            'title': name_parts[1].strip(),
+                            'linkedin_url': result.find('a')['href']
+                        }
+                        # Avoid duplicates
+                        if not any(p['name'] == person['name'] for p in people):
+                            people.append(person)
+            
+            # Add delay to avoid rate limiting
+            time.sleep(1)
+        
+        return people
+    
+    except Exception as e:
+        st.error(f"Error fetching people info: {str(e)}")
+        return []
 
 def main():
-    # Search interface
-    st.markdown("<h1 style='text-align: center'>🔍 GCC Search</h1>", unsafe_allow_html=True)
+    st.title("🔍 GCC Company Search")
     
     # Search box
-    query = st.text_input(
-        "",
-        placeholder="Search for company or executive...",
-        help="Enter company name to search for company and executive information"
+    company_name = st.text_input(
+        "Enter company name",
+        placeholder="Example: Microsoft, Google, TCS, etc.",
+        key="search_box"
     )
     
-    if query:
-        with st.spinner('Searching...'):
-            results = search_company_and_people(query)
-            
-            # Display results
-            if results['company_info'] or results['people']:
-                # Company information
-                if results['company_info']:
+    if company_name:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            with st.spinner('Searching company information...'):
+                company_info = get_company_info(company_name)
+                if company_info:
                     st.subheader("Company Information")
-                    for company in results['company_info']:
+                    st.markdown(f"""
+                    <div class="result-card">
+                        <h3>{company_info['name']}</h3>
+                        <p>{company_info['description']}</p>
+                        <p><strong>Website:</strong> <a href="{company_info['website']}" target="_blank">{company_info['website']}</a></p>
+                        <p><strong>LinkedIn:</strong> <a href="{company_info['linkedin_url']}" target="_blank">Company Profile</a></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        with col2:
+            with st.spinner('Searching key people...'):
+                people = get_people_info(company_name)
+                if people:
+                    st.subheader("Key People")
+                    for person in people:
                         st.markdown(f"""
-                        <div class="result-card">
-                            <h3>{company['name']}</h3>
-                            <p>{company['description']}</p>
-                            <a href="{company['linkedin_url']}" target="_blank">Company LinkedIn Profile</a>
+                        <div class="person-info">
+                            <h4>{person['name']}</h4>
+                            <p>{person['title']}</p>
+                            <a href="{person['linkedin_url']}" target="_blank" class="linkedin-button">
+                                View LinkedIn Profile
+                            </a>
                         </div>
                         """, unsafe_allow_html=True)
                 
-                # People information
-                if results['people']:
-                    st.subheader("Key People")
-                    cols = st.columns(2)
-                    for idx, person in enumerate(results['people']):
-                        with cols[idx % 2]:
-                            st.markdown(f"""
-                            <div class="person-card">
-                                <h4>{person['name']}</h4>
-                                <p class="designation">{person['designation']}</p>
-                                <a class="linkedin-link" href="{person['linkedin_url']}" target="_blank">
-                                    View LinkedIn Profile
-                                </a>
-                            </div>
-                            """, unsafe_allow_html=True)
-                
-                # Export option
-                if st.button("Export Results"):
-                    # Create DataFrame for export
-                    company_df = pd.DataFrame(results['company_info'])
-                    people_df = pd.DataFrame(results['people'])
-                    
-                    # Create Excel file
-                    with pd.ExcelWriter('gcc_search_results.xlsx') as writer:
-                        company_df.to_excel(writer, sheet_name='Company Info', index=False)
-                        people_df.to_excel(writer, sheet_name='Key People', index=False)
-                    
-                    st.success("Results exported to gcc_search_results.xlsx")
-            
-            else:
-                st.info("No results found. Try modifying your search terms.")
-    
-    # Footer with usage information
-    st.markdown("---")
-    st.markdown("""
-    <small>
-    Search for companies and their key executives. Results include:
-    - Company LinkedIn profiles
-    - Company descriptions
-    - Key executives and their roles
-    - LinkedIn profiles of executives
-    </small>
-    """, unsafe_allow_html=True)
+                    # Export button
+                    if st.button("Export to Excel"):
+                        df = pd.DataFrame(people)
+                        df.to_excel(f"{company_name}_key_people.xlsx", index=False)
+                        st.success("Data exported successfully!")
+                else:
+                    st.info("No key people found. Try a different search term.")
 
 if __name__ == "__main__":
     main()
