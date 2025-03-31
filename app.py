@@ -5,11 +5,10 @@ from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 import sqlite3
-import jwt
-from typing import Optional
 import os
 import logging
 from pathlib import Path
+from data.sample_data import sample_companies, sample_stakeholders
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -79,56 +78,27 @@ def init_db():
         )
     ''')
     
-    # Create developments table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS developments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company_id INTEGER,
-            title TEXT NOT NULL,
-            content TEXT,
-            source_url TEXT,
-            published_date TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (company_id) REFERENCES companies (id)
-        )
-    ''')
-    
     # Insert sample data if tables are empty
     c.execute("SELECT COUNT(*) FROM companies")
     if c.fetchone()[0] == 0:
-        c.execute("""
-            INSERT INTO companies (name, website, linkedin_url, city, industry, description)
-            VALUES 
-            ('Tech Corp GCC', 'https://techcorp.com', 'https://linkedin.com/company/techcorp', 
-             'Bangalore', 'Technology', 'Leading technology GCC'),
-            ('Finance Solutions', 'https://finsolutions.com', 'https://linkedin.com/company/finsolutions', 
-             'Mumbai', 'Finance', 'Financial services GCC')
-        """)
+        for company in sample_companies:
+            c.execute("""
+                INSERT INTO companies (name, website, linkedin_url, city, industry, description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (company['name'], company['website'], company['linkedin_url'], 
+                 company['city'], company['industry'], company['description']))
+        
+        for stakeholder in sample_stakeholders:
+            c.execute("""
+                INSERT INTO stakeholders (name, role, linkedin_url, email, company_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (stakeholder['name'], stakeholder['role'], stakeholder['linkedin_url'],
+                 stakeholder['email'], stakeholder['company_id']))
     
     conn.commit()
     conn.close()
 
 # Authentication
-class AuthHandler:
-    def __init__(self):
-        self.secret = st.secrets.get("jwt_secret", "your-secret-key")
-        self.algorithm = "HS256"
-
-    def create_token(self, username: str) -> str:
-        payload = {
-            'exp': datetime.utcnow() + timedelta(hours=8),
-            'iat': datetime.utcnow(),
-            'sub': username
-        }
-        return jwt.encode(payload, self.secret, algorithm=self.algorithm)
-
-    def verify_token(self, token: str) -> Optional[str]:
-        try:
-            payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
-            return payload['sub']
-        except:
-            return None
-
 def check_authentication(username: str, password: str) -> bool:
     return (username == st.secrets.get("admin_username", "admin") and 
             password == st.secrets.get("admin_password", "password"))
@@ -152,18 +122,6 @@ def get_stakeholders():
     conn.close()
     return stakeholders
 
-@st.cache_data(ttl=3600)
-def get_developments():
-    conn = sqlite3.connect('gcc_tracker.db')
-    developments = pd.read_sql_query("""
-        SELECT d.*, c.name as company_name 
-        FROM developments d 
-        JOIN companies c ON d.company_id = c.id
-        ORDER BY published_date DESC
-    """, conn)
-    conn.close()
-    return developments
-
 # Add new company form
 def add_company_form():
     with st.form("add_company"):
@@ -176,24 +134,62 @@ def add_company_form():
         description = st.text_area("Description")
         
         if st.form_submit_button("Add Company"):
-            conn = sqlite3.connect('gcc_tracker.db')
-            c = conn.cursor()
-            c.execute("""
-                INSERT INTO companies (name, website, linkedin_url, city, industry, description)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (name, website, linkedin_url, city, industry, description))
-            conn.commit()
-            conn.close()
-            st.success("Company added successfully!")
-            st.cache_data.clear()
+            if name:  # Basic validation
+                conn = sqlite3.connect('gcc_tracker.db')
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO companies (name, website, linkedin_url, city, industry, description)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (name, website, linkedin_url, city, industry, description))
+                conn.commit()
+                conn.close()
+                st.success("Company added successfully!")
+                st.cache_data.clear()
+            else:
+                st.error("Company name is required!")
+
+# Add new stakeholder form
+def add_stakeholder_form():
+    with st.form("add_stakeholder"):
+        st.subheader("Add New Stakeholder")
+        name = st.text_input("Stakeholder Name")
+        role = st.text_input("Role")
+        linkedin_url = st.text_input("LinkedIn URL")
+        email = st.text_input("Email")
+        
+        # Get companies for dropdown
+        companies = get_companies()
+        company_names = companies['name'].tolist()
+        company_name = st.selectbox("Company", company_names)
+        
+        if st.form_submit_button("Add Stakeholder"):
+            if name:  # Basic validation
+                conn = sqlite3.connect('gcc_tracker.db')
+                c = conn.cursor()
+                
+                # Get company_id
+                company_id = companies[companies['name'] == company_name]['id'].iloc[0]
+                
+                c.execute("""
+                    INSERT INTO stakeholders (name, role, linkedin_url, email, company_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (name, role, linkedin_url, email, company_id))
+                conn.commit()
+                conn.close()
+                st.success("Stakeholder added successfully!")
+                st.cache_data.clear()
+            else:
+                st.error("Stakeholder name is required!")
 
 # UI Components
 def show_companies_page():
     st.header("Companies")
     
-    # Add company button
-    if st.button("Add New Company"):
-        st.session_state['show_add_company'] = True
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        # Add company button
+        if st.button("Add New Company"):
+            st.session_state['show_add_company'] = True
     
     if st.session_state.get('show_add_company', False):
         add_company_form()
@@ -226,12 +222,22 @@ def show_companies_page():
                 st.write(f"🌆 {company['city']} | 🏭 {company['industry']}")
                 st.write(company['description'])
             with col2:
-                st.write(f"[Website]({company['website']})")
-                st.write(f"[LinkedIn]({company['linkedin_url']})")
+                if company['website']:
+                    st.write(f"[Website]({company['website']})")
+                if company['linkedin_url']:
+                    st.write(f"[LinkedIn]({company['linkedin_url']})")
             st.markdown("---")
 
 def show_stakeholders_page():
     st.header("Stakeholders")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        if st.button("Add New Stakeholder"):
+            st.session_state['show_add_stakeholder'] = True
+    
+    if st.session_state.get('show_add_stakeholder', False):
+        add_stakeholder_form()
     
     # Filters
     search = st.text_input("Search stakeholders")
@@ -259,18 +265,6 @@ def show_stakeholders_page():
                     st.write(f"📧 {stakeholder['email']}")
             st.markdown("---")
 
-def show_developments_page():
-    st.header("Latest Developments")
-    
-    developments = get_developments()
-    
-    for _, dev in developments.iterrows():
-        with st.expander(f"{dev['company_name']}: {dev['title']}"):
-            st.write(f"**Date:** {dev['published_date']}")
-            st.write(dev['content'])
-            if dev['source_url']:
-                st.write(f"[Source]({dev['source_url']})")
-
 def show_admin_page():
     st.header("Admin Panel")
     
@@ -282,14 +276,25 @@ def show_admin_page():
     
     # Data Export
     st.subheader("Export Data")
-    if st.button("Export Companies"):
-        companies = get_companies()
-        st.download_button(
-            label="Download Companies CSV",
-            data=companies.to_csv(index=False),
-            file_name="companies.csv",
-            mime="text/csv"
-        )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Export Companies"):
+            companies = get_companies()
+            st.download_button(
+                label="Download Companies CSV",
+                data=companies.to_csv(index=False),
+                file_name="companies.csv",
+                mime="text/csv"
+            )
+    with col2:
+        if st.button("Export Stakeholders"):
+            stakeholders = get_stakeholders()
+            st.download_button(
+                label="Download Stakeholders CSV",
+                data=stakeholders.to_csv(index=False),
+                file_name="stakeholders.csv",
+                mime="text/csv"
+            )
 
 # Main Application
 def main():
@@ -302,25 +307,21 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Select a page",
-        ["Companies", "Stakeholders", "Developments", "Admin"]
+        ["Companies", "Stakeholders", "Admin"]
     )
     
     # Display metrics
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         st.metric("Total Companies", len(get_companies()))
     with col2:
         st.metric("Total Stakeholders", len(get_stakeholders()))
-    with col3:
-        st.metric("Latest Updates", len(get_developments()))
     
     # Page routing
     if page == "Companies":
         show_companies_page()
     elif page == "Stakeholders":
         show_stakeholders_page()
-    elif page == "Developments":
-        show_developments_page()
     elif page == "Admin":
         show_admin_page()
 
