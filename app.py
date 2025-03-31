@@ -1,191 +1,173 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
+from bs4 import BeautifulSoup
 import time
-import random
+import re
+from urllib.parse import quote
 
-# Page Configuration
-st.set_page_config(page_title="GCC Search", layout="wide")
+# Page config
+st.set_page_config(layout="wide", page_title="GCC Tracker")
 
-# Search headers to mimic browser behavior
-HEADERS_LIST = [
-    {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-    },
-    {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Connection': 'keep-alive',
-    }
-]
+# Custom headers to mimic browser
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Referer': 'https://www.google.com/',
+    'DNT': '1',
+}
 
-def get_random_headers():
-    return random.choice(HEADERS_LIST)
+# Cache the session
+if 'search_results' not in st.session_state:
+    st.session_state.search_results = {}
 
-def search_linkedin(company_name):
-    """Search LinkedIn for company and people"""
-    base_url = "https://www.linkedin.com/company/"
-    search_url = f"{base_url}{company_name.lower().replace(' ', '-')}"
+def fetch_linkedin_data(company_name):
+    """Fetch data from LinkedIn public pages"""
+    encoded_name = quote(company_name)
+    url = f"https://www.linkedin.com/company/{encoded_name}/about/"
     
     try:
-        response = requests.get(search_url, headers=get_random_headers(), timeout=10)
-        if response.status_code == 200:
-            return response.url
-    except:
-        pass
-    return None
-
-def search_google(query):
-    """Search using Google with delay and rotating headers"""
-    search_url = f"https://www.google.com/search?q={query}"
-    
-    try:
-        response = requests.get(search_url, headers=get_random_headers(), timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             return soup
     except Exception as e:
-        st.error(f"Search error: {e}")
+        st.error(f"Error fetching LinkedIn data: {e}")
     return None
 
-def extract_company_data(company_name):
-    """Extract company information from multiple sources"""
-    company_data = []
-    
-    # Direct LinkedIn search
-    linkedin_url = search_linkedin(company_name)
-    if linkedin_url:
-        company_data.append({
-            'Company Name': company_name,
-            'LinkedIn URL': linkedin_url,
-            'Source': 'LinkedIn Direct'
-        })
-    
-    # Google search
-    time.sleep(1)  # Add delay between searches
-    soup = search_google(f"{company_name} gcc india linkedin")
-    if soup:
-        for result in soup.find_all('div', class_='g'):
-            link = result.find('a')
-            if link:
-                href = link.get('href', '')
-                if 'linkedin.com/company' in href:
-                    company_data.append({
-                        'Company Name': company_name,
-                        'LinkedIn URL': href,
-                        'Source': 'Google Search'
-                    })
-    
-    return pd.DataFrame(company_data)
+def fetch_company_website(company_name):
+    """Fetch company website data"""
+    try:
+        response = requests.get(f"https://www.{company_name.lower().replace(' ', '')}.com", 
+                              headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return response.url
+    except:
+        return None
 
-def extract_people_data(company_name):
-    """Extract people information from multiple sources"""
-    people_data = []
-    search_terms = [
-        ('CEO', 'Leadership'),
-        ('CTO', 'Technology'),
-        ('Director', 'Management'),
-        ('Vice President', 'Executive'),
-        ('Head', 'Management')
-    ]
+def search_people(company_name):
+    """Search for company executives"""
+    base_url = "https://www.linkedin.com/search/results/people/"
+    query = f"?keywords={quote(company_name)}%20CEO%20CTO%20Director%20VP&origin=GLOBAL_SEARCH_HEADER"
     
-    for role, level in search_terms:
-        time.sleep(1)  # Add delay between searches
-        soup = search_google(f"{company_name} {role} india linkedin")
-        if soup:
-            for result in soup.find_all('div', class_='g'):
-                link = result.find('a')
-                title = result.find('h3')
-                if link and title and 'linkedin.com/in/' in link.get('href', ''):
-                    text = title.text.split('-')
-                    if len(text) >= 2:
-                        name = text[0].strip()
-                        position = text[1].strip()
-                        
-                        # Avoid duplicates
-                        if not any(p.get('Name') == name for p in people_data):
-                            people_data.append({
-                                'Name': name,
-                                'Position': position,
-                                'Level': level,
-                                'Company': company_name,
-                                'LinkedIn URL': link.get('href', ''),
-                                'Found Via': role
-                            })
-    
-    return pd.DataFrame(people_data)
+    try:
+        response = requests.get(base_url + query, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            return soup
+    except Exception as e:
+        st.error(f"Error searching people: {e}")
+    return None
 
 def main():
-    st.title("🔍 GCC Company & People Search")
+    st.title("🌐 Live GCC Company Tracker")
     
     # Search interface
-    col1, col2 = st.columns([4,1])
+    col1, col2 = st.columns([3,1])
     with col1:
-        company_name = st.text_input(
-            "",
-            placeholder="Enter company name (e.g., Microsoft, Google, TCS)",
-            help="Enter the full company name for better results"
-        )
+        company_name = st.text_input("Enter company name", 
+                                   placeholder="e.g., Microsoft, Google, Amazon")
     with col2:
         st.write("")
         st.write("")
         search = st.button("🔍 Search")
     
     if company_name and search:
-        # Progress bar
-        progress_bar = st.progress(0)
+        # Create progress bar
+        progress = st.progress(0)
+        status = st.empty()
         
-        # Search company information
-        with st.spinner('Searching company information...'):
-            company_df = extract_company_data(company_name)
-            progress_bar.progress(50)
+        # Initialize results
+        company_data = []
+        people_data = []
         
-        # Search people information
-        with st.spinner('Searching key people...'):
-            people_df = extract_people_data(company_name)
-            progress_bar.progress(100)
+        # Fetch company data
+        status.text("Searching company information...")
+        progress.progress(25)
+        
+        # Try LinkedIn
+        linkedin_data = fetch_linkedin_data(company_name)
+        if linkedin_data:
+            company_info = {
+                'Company Name': company_name,
+                'LinkedIn URL': f"https://www.linkedin.com/company/{quote(company_name)}/",
+                'Website': fetch_company_website(company_name),
+                'Type': 'GCC/Development Center'
+            }
+            company_data.append(company_info)
+        
+        progress.progress(50)
+        status.text("Searching key people...")
+        
+        # Search for people
+        people_soup = search_people(company_name)
+        if people_soup:
+            for person in people_soup.find_all('div', {'class': 'entity-result__item'}):
+                name_elem = person.find('span', {'class': 'entity-result__title-text'})
+                role_elem = person.find('div', {'class': 'entity-result__primary-subtitle'})
+                
+                if name_elem and role_elem:
+                    person_info = {
+                        'Name': name_elem.text.strip(),
+                        'Role': role_elem.text.strip(),
+                        'Company': company_name,
+                        'LinkedIn URL': f"https://www.linkedin.com/in/{name_elem.text.strip().lower().replace(' ', '-')}/"
+                    }
+                    people_data.append(person_info)
+        
+        progress.progress(75)
+        status.text("Processing results...")
+        
+        # Create DataFrames
+        company_df = pd.DataFrame(company_data)
+        people_df = pd.DataFrame(people_data)
+        
+        # Store in session state
+        st.session_state.search_results[company_name] = {
+            'company': company_df,
+            'people': people_df,
+            'timestamp': pd.Timestamp.now()
+        }
+        
+        progress.progress(100)
+        status.empty()
         
         # Display results in tabs
-        tab1, tab2 = st.tabs(["🏢 Company", "👥 Key People"])
+        tab1, tab2 = st.tabs(["Company Information", "Key People"])
         
         with tab1:
             if not company_df.empty:
-                st.success(f"Found {len(company_df)} company results")
                 st.dataframe(
                     company_df,
                     column_config={
-                        "LinkedIn URL": st.column_config.LinkColumn("LinkedIn Profile")
+                        "LinkedIn URL": st.column_config.LinkColumn(),
+                        "Website": st.column_config.LinkColumn()
                     },
                     hide_index=True
                 )
-            else:
-                st.warning(f"No company profile found for {company_name}. Try these tips:")
-                st.info("""
-                - Check the company name spelling
-                - Try the parent company name
-                - Add 'India' or 'GCC' to the company name
+                
+                # Additional company info
+                st.subheader("Recent Updates")
+                st.markdown(f"""
+                - Company: {company_name}
+                - Location: India
+                - Last Updated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}
                 """)
+            else:
+                st.info("No company information found. Try a different search term.")
         
         with tab2:
             if not people_df.empty:
-                st.success(f"Found {len(people_df)} people")
+                # Add filters
+                roles = ['All'] + list(people_df['Role'].unique())
+                selected_role = st.selectbox("Filter by Role", roles)
                 
-                # Filters
-                col1, col2 = st.columns(2)
-                with col1:
-                    levels = ['All'] + sorted(people_df['Level'].unique().tolist())
-                    level_filter = st.selectbox('Filter by Level', levels)
-                
-                # Apply filters
-                filtered_df = people_df
-                if level_filter != 'All':
-                    filtered_df = filtered_df[filtered_df['Level'] == level_filter]
+                # Apply filter
+                if selected_role != 'All':
+                    filtered_df = people_df[people_df['Role'].str.contains(selected_role, case=False)]
+                else:
+                    filtered_df = people_df
                 
                 # Display results
                 st.dataframe(
@@ -193,34 +175,26 @@ def main():
                     column_config={
                         "LinkedIn URL": st.column_config.LinkColumn("Profile"),
                         "Name": st.column_config.TextColumn(width="medium"),
-                        "Position": st.column_config.TextColumn(width="large"),
-                        "Level": st.column_config.TextColumn(width="small")
+                        "Role": st.column_config.TextColumn(width="large")
                     },
                     hide_index=True
                 )
             else:
-                st.warning(f"No key people found for {company_name}. Try these tips:")
-                st.info("""
-                - Use the complete company name
-                - Try searching for specific roles (CEO, CTO, etc.)
-                - Add location information (India, Bangalore, etc.)
-                """)
-
-    # Add search tips
-    with st.expander("ℹ️ Search Tips"):
-        st.markdown("""
-        ### For better results:
-        1. Use the complete company name
-        2. Try different variations of the company name
-        3. Include 'India' or 'GCC' in the search
-        4. Wait for the search to complete
-        5. Check both Company and People tabs
+                st.info("No key people found. Try a different search term.")
         
-        ### Example searches:
-        - "Microsoft India"
-        - "Google India GCC"
-        - "TCS Global"
-        """)
+        # Show search tips
+        with st.expander("Search Tips"):
+            st.markdown("""
+            ### For better results:
+            1. Use the complete company name
+            2. Try adding 'India' or 'GCC' to the company name
+            3. Search for major tech companies
+            
+            ### Example searches:
+            - Microsoft India
+            - Google Development Center
+            - Amazon Development Center India
+            """)
 
 if __name__ == "__main__":
     main()
