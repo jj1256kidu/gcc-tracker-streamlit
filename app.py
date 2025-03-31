@@ -1,8 +1,14 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-import os
-from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+import re
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Page Configuration
 st.set_page_config(
@@ -12,236 +18,166 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Sample Data (moved from external file)
-sample_companies = [
-    {
-        'name': 'Tech Corp GCC',
-        'website': 'https://techcorp.com',
-        'linkedin_url': 'https://linkedin.com/company/techcorp',
-        'city': 'Bangalore',
-        'industry': 'Technology',
-        'description': 'Leading technology GCC'
-    },
-    {
-        'name': 'Finance Solutions',
-        'website': 'https://finsolutions.com',
-        'linkedin_url': 'https://linkedin.com/company/finsolutions',
-        'city': 'Mumbai',
-        'industry': 'Finance',
-        'description': 'Financial services GCC'
+# Custom CSS
+st.markdown("""
+    <style>
+    .company-info {
+        padding: 20px;
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        margin: 10px 0;
     }
-]
-
-sample_stakeholders = [
-    {
-        'name': 'John Doe',
-        'role': 'CEO',
-        'linkedin_url': 'https://linkedin.com/in/johndoe',
-        'email': 'john@techcorp.com',
-        'company_id': 1
-    },
-    {
-        'name': 'Jane Smith',
-        'role': 'CTO',
-        'linkedin_url': 'https://linkedin.com/in/janesmith',
-        'email': 'jane@finsolutions.com',
-        'company_id': 2
+    .person-card {
+        padding: 15px;
+        border: 1px solid #f0f0f0;
+        border-radius: 5px;
+        margin: 5px 0;
     }
-]
+    .highlight {
+        background-color: #f0f8ff;
+        padding: 2px 5px;
+        border-radius: 3px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Database Setup
-def init_db():
+def search_company(company_name):
+    """Search company information using Google"""
     try:
-        conn = sqlite3.connect('gcc_tracker.db')
-        c = conn.cursor()
+        # Set up Chrome options for headless browsing
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
         
-        # Create companies table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS companies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                website TEXT,
-                linkedin_url TEXT,
-                city TEXT,
-                industry TEXT,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+        driver = webdriver.Chrome(options=chrome_options)
         
-        # Create stakeholders table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS stakeholders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                role TEXT,
-                linkedin_url TEXT,
-                email TEXT,
-                company_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (company_id) REFERENCES companies (id)
-            )
-        ''')
+        # Search for company website
+        driver.get(f"https://www.google.com/search?q={company_name} company website")
+        website = driver.find_element(By.CSS_SELECTOR, "cite").text
         
-        # Insert sample data if tables are empty
-        c.execute("SELECT COUNT(*) FROM companies")
-        if c.fetchone()[0] == 0:
-            for company in sample_companies:
-                c.execute("""
-                    INSERT INTO companies (name, website, linkedin_url, city, industry, description)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (company['name'], company['website'], company['linkedin_url'], 
-                     company['city'], company['industry'], company['description']))
+        # Search for LinkedIn page
+        driver.get(f"https://www.google.com/search?q={company_name} linkedin company")
+        linkedin_url = ""
+        links = driver.find_elements(By.CSS_SELECTOR, "cite")
+        for link in links:
+            if "linkedin.com/company" in link.text:
+                linkedin_url = link.text
+                break
+        
+        # Get company information from LinkedIn
+        if linkedin_url:
+            driver.get(linkedin_url)
+            time.sleep(2)  # Wait for page to load
             
-            for stakeholder in sample_stakeholders:
-                c.execute("""
-                    INSERT INTO stakeholders (name, role, linkedin_url, email, company_id)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (stakeholder['name'], stakeholder['role'], stakeholder['linkedin_url'],
-                     stakeholder['email'], stakeholder['company_id']))
+            try:
+                company_info = {
+                    'name': company_name,
+                    'website': website,
+                    'linkedin': linkedin_url,
+                    'description': driver.find_element(By.CLASS_NAME, "about-us__description").text,
+                    'industry': driver.find_element(By.CLASS_NAME, "company-industries").text,
+                    'headquarters': driver.find_element(By.CLASS_NAME, "company-location").text
+                }
+            except:
+                company_info = {
+                    'name': company_name,
+                    'website': website,
+                    'linkedin': linkedin_url,
+                    'description': "Description not found",
+                    'industry': "Industry not found",
+                    'headquarters': "Location not found"
+                }
         
-        conn.commit()
+        driver.quit()
+        return company_info
+    
     except Exception as e:
-        st.error(f"Database Error: {str(e)}")
-    finally:
-        conn.close()
+        st.error(f"Error searching company: {str(e)}")
+        return None
 
-# Authentication
-def check_authentication(username: str, password: str) -> bool:
-    return (username == st.secrets.get("admin_username", "admin") and 
-            password == st.secrets.get("admin_password", "password"))
-
-# Data Management
-@st.cache_data(ttl=3600)
-def get_companies():
+def search_key_people(company_linkedin_url):
+    """Search key people from company's LinkedIn page"""
     try:
-        conn = sqlite3.connect('gcc_tracker.db')
-        companies = pd.read_sql_query("SELECT * FROM companies", conn)
-        return companies
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(f"{company_linkedin_url}/people")
+        time.sleep(2)
+        
+        people = []
+        people_elements = driver.find_elements(By.CLASS_NAME, "employee-card")
+        
+        for element in people_elements[:10]:  # Get first 10 people
+            try:
+                name = element.find_element(By.CLASS_NAME, "employee-name").text
+                title = element.find_element(By.CLASS_NAME, "employee-title").text
+                linkedin_url = element.find_element(By.CLASS_NAME, "employee-link").get_attribute("href")
+                location = element.find_element(By.CLASS_NAME, "employee-location").text
+                
+                people.append({
+                    'name': name,
+                    'title': title,
+                    'linkedin': linkedin_url,
+                    'location': location
+                })
+            except:
+                continue
+        
+        driver.quit()
+        return people
+    
     except Exception as e:
-        st.error(f"Error loading companies: {str(e)}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+        st.error(f"Error searching people: {str(e)}")
+        return []
 
-@st.cache_data(ttl=3600)
-def get_stakeholders():
-    try:
-        conn = sqlite3.connect('gcc_tracker.db')
-        stakeholders = pd.read_sql_query("""
-            SELECT s.*, c.name as company_name 
-            FROM stakeholders s 
-            JOIN companies c ON s.company_id = c.id
-        """, conn)
-        return stakeholders
-    except Exception as e:
-        st.error(f"Error loading stakeholders: {str(e)}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-# UI Components
-def show_companies_page():
-    st.header("Companies")
-    
-    companies = get_companies()
-    
-    # Filters
-    col1, col2 = st.columns(2)
-    with col1:
-        city_filter = st.selectbox("City", ["All"] + list(companies['city'].unique()))
-    with col2:
-        search = st.text_input("Search companies")
-    
-    # Filter data
-    if city_filter != "All":
-        companies = companies[companies['city'] == city_filter]
-    if search:
-        companies = companies[companies['name'].str.contains(search, case=False)]
-    
-    # Display data
-    st.dataframe(companies)
-
-def show_stakeholders_page():
-    st.header("Stakeholders")
-    
-    stakeholders = get_stakeholders()
-    
-    # Search filter
-    search = st.text_input("Search stakeholders")
-    
-    # Filter data
-    if search:
-        stakeholders = stakeholders[
-            stakeholders['name'].str.contains(search, case=False) |
-            stakeholders['role'].str.contains(search, case=False)
-        ]
-    
-    # Display data
-    st.dataframe(stakeholders)
-
-def show_admin_page():
-    st.header("Admin Panel")
-    
-    if st.button("Clear Cache"):
-        st.cache_data.clear()
-        st.success("Cache cleared!")
-    
-    if st.button("Export Data"):
-        companies = get_companies()
-        st.download_button(
-            label="Download Companies CSV",
-            data=companies.to_csv(index=False),
-            file_name="companies.csv",
-            mime="text/csv"
-        )
-
-# Main Application
 def main():
-    st.title("GCC Tracker")
+    st.title("GCC Company Search")
     
-    # Initialize database
-    init_db()
+    # Search bar
+    company_name = st.text_input("Enter company name to search")
     
-    # Sidebar navigation
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio(
-        "Select a page",
-        ["Companies", "Stakeholders", "Admin"]
-    )
-    
-    # Display metrics
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Total Companies", len(get_companies()))
-    with col2:
-        st.metric("Total Stakeholders", len(get_stakeholders()))
-    
-    # Page routing
-    if page == "Companies":
-        show_companies_page()
-    elif page == "Stakeholders":
-        show_stakeholders_page()
-    elif page == "Admin":
-        show_admin_page()
-
-def login():
-    st.title("GCC Tracker - Login")
-    
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
-        
-        if submit:
-            if check_authentication(username, password):
-                st.session_state['authenticated'] = True
-                st.experimental_rerun()
+    if company_name:
+        with st.spinner('Searching company information...'):
+            company_info = search_company(company_name)
+            
+            if company_info:
+                # Display company information
+                st.header("Company Information")
+                with st.container():
+                    st.markdown(f"""
+                    <div class="company-info">
+                        <h3>{company_info['name']}</h3>
+                        <p><strong>Website:</strong> <a href="{company_info['website']}" target="_blank">{company_info['website']}</a></p>
+                        <p><strong>LinkedIn:</strong> <a href="{company_info['linkedin']}" target="_blank">{company_info['linkedin']}</a></p>
+                        <p><strong>Industry:</strong> {company_info['industry']}</p>
+                        <p><strong>Headquarters:</strong> {company_info['headquarters']}</p>
+                        <p><strong>Description:</strong> {company_info['description']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # Search for key people
+                st.header("Key People")
+                with st.spinner('Searching key people...'):
+                    people = search_key_people(company_info['linkedin'])
+                    
+                    if people:
+                        for person in people:
+                            st.markdown(f"""
+                            <div class="person-card">
+                                <h4>{person['name']}</h4>
+                                <p><strong>Title:</strong> {person['title']}</p>
+                                <p><strong>Location:</strong> {person['location']}</p>
+                                <p><strong>LinkedIn:</strong> <a href="{person['linkedin']}" target="_blank">{person['linkedin']}</a></p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("No key people information found")
             else:
-                st.error("Invalid credentials")
+                st.error("Company information not found")
 
 if __name__ == "__main__":
-    if 'authenticated' not in st.session_state:
-        login()
-    else:
-        main()
+    main()
