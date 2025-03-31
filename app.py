@@ -2,199 +2,235 @@ import streamlit as st
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-import time
+from fuzzywuzzy import fuzz
+import spacy
 import re
 from urllib.parse import quote
+import time
+
+# Load SpaCy model for entity recognition
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    st.warning("Installing required language model...")
+    import os
+    os.system("python -m spacy download en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
 
 # Page config
-st.set_page_config(layout="wide", page_title="GCC Tracker")
+st.set_page_config(layout="wide", page_title="Smart GCC Tracker")
 
-# Custom headers to mimic browser
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://www.google.com/',
-    'DNT': '1',
+# Known company patterns and variations
+COMPANY_PATTERNS = {
+    "microsoft": [
+        "Microsoft", "Microsoft India", "Microsoft IDC", 
+        "Microsoft India Development Center", "Microsoft R&D"
+    ],
+    "google": [
+        "Google", "Google India", "Google Development Center", 
+        "Google IDC", "Google R&D India"
+    ],
+    "amazon": [
+        "Amazon", "Amazon India", "Amazon Development Center", 
+        "Amazon IDC", "Amazon R&D"
+    ],
+    # Add more companies as needed
 }
 
-# Cache the session
-if 'search_results' not in st.session_state:
-    st.session_state.search_results = {}
+# Executive role patterns
+EXECUTIVE_ROLES = {
+    "leadership": ["CEO", "Chief Executive", "Managing Director", "Country Head"],
+    "technology": ["CTO", "Chief Technology", "Tech Head", "Engineering Head"],
+    "product": ["CPO", "Product Head", "VP Product", "Director Product"],
+    "engineering": ["Engineering Director", "VP Engineering", "Engineering Head"],
+    "operations": ["COO", "Operations Head", "VP Operations"]
+}
 
-def fetch_linkedin_data(company_name):
-    """Fetch data from LinkedIn public pages"""
-    encoded_name = quote(company_name)
-    url = f"https://www.linkedin.com/company/{encoded_name}/about/"
-    
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            return soup
-    except Exception as e:
-        st.error(f"Error fetching LinkedIn data: {e}")
-    return None
+class SmartCompanySearch:
+    def __init__(self):
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://www.google.com/',
+            'DNT': '1',
+        }
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
 
-def fetch_company_website(company_name):
-    """Fetch company website data"""
-    try:
-        response = requests.get(f"https://www.{company_name.lower().replace(' ', '')}.com", 
-                              headers=HEADERS, timeout=10)
-        if response.status_code == 200:
-            return response.url
-    except:
-        return None
+    def normalize_company_name(self, partial_name):
+        """Use AI to normalize and complete company name"""
+        partial_name = partial_name.lower()
+        
+        # Check known patterns
+        for base_name, variations in COMPANY_PATTERNS.items():
+            if base_name in partial_name or any(fuzz.partial_ratio(v.lower(), partial_name) > 80 for v in variations):
+                return variations[0]  # Return standardized name
+        
+        # Use SpaCy for unknown companies
+        doc = nlp(partial_name)
+        for ent in doc.ents:
+            if ent.label_ == "ORG":
+                return ent.text
+        
+        return partial_name.title()
 
-def search_people(company_name):
-    """Search for company executives"""
-    base_url = "https://www.linkedin.com/search/results/people/"
-    query = f"?keywords={quote(company_name)}%20CEO%20CTO%20Director%20VP&origin=GLOBAL_SEARCH_HEADER"
-    
-    try:
-        response = requests.get(base_url + query, headers=HEADERS, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            return soup
-    except Exception as e:
-        st.error(f"Error searching people: {e}")
-    return None
+    def get_company_variations(self, company_name):
+        """Generate variations of company name for searching"""
+        base_name = self.normalize_company_name(company_name)
+        variations = [
+            base_name,
+            f"{base_name} India",
+            f"{base_name} GCC",
+            f"{base_name} Development Center",
+            f"{base_name} R&D"
+        ]
+        return list(set(variations))
+
+    def search_company(self, company_name):
+        """Smart company search with multiple attempts"""
+        company_data = []
+        variations = self.get_company_variations(company_name)
+        
+        for variation in variations:
+            try:
+                # LinkedIn search
+                linkedin_url = f"https://www.linkedin.com/company/{quote(variation.lower().replace(' ', '-'))}"
+                response = self.session.get(linkedin_url, timeout=10)
+                
+                if response.status_code == 200:
+                    company_data.append({
+                        'Company Name': variation,
+                        'Standard Name': self.normalize_company_name(company_name),
+                        'LinkedIn': linkedin_url,
+                        'Type': 'GCC/Development Center',
+                        'Location': 'India',
+                        'Source': 'LinkedIn'
+                    })
+                
+                time.sleep(1)  # Respect rate limits
+            except Exception as e:
+                continue
+        
+        return pd.DataFrame(company_data).drop_duplicates(subset=['LinkedIn'])
+
+    def search_executives(self, company_name):
+        """Smart executive search with role matching"""
+        executives = []
+        normalized_name = self.normalize_company_name(company_name)
+        
+        for role_category, role_patterns in EXECUTIVE_ROLES.items():
+            for role in role_patterns:
+                try:
+                    search_query = f"{normalized_name} {role} india linkedin"
+                    url = f"https://www.google.com/search?q={quote(search_query)}"
+                    response = self.session.get(url, timeout=10)
+                    
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.content, 'html.parser')
+                        
+                        for result in soup.find_all('div', class_='g'):
+                            link = result.find('a')
+                            title = result.find('h3')
+                            
+                            if link and title and 'linkedin.com/in/' in link.get('href', ''):
+                                name_parts = title.text.split('-')
+                                if len(name_parts) >= 2:
+                                    name = name_parts[0].strip()
+                                    position = name_parts[1].strip()
+                                    
+                                    # Check if this is a relevant executive role
+                                    if any(rp.lower() in position.lower() for rp in role_patterns):
+                                        executive = {
+                                            'Name': name,
+                                            'Position': position,
+                                            'Category': role_category,
+                                            'Company': normalized_name,
+                                            'LinkedIn': link.get('href'),
+                                            'Location': 'India'
+                                        }
+                                        
+                                        # Avoid duplicates using fuzzy matching
+                                        if not any(fuzz.ratio(e['Name'], name) > 90 for e in executives):
+                                            executives.append(executive)
+                    
+                    time.sleep(1)  # Respect rate limits
+                except Exception as e:
+                    continue
+        
+        return pd.DataFrame(executives)
 
 def main():
-    st.title("🌐 Live GCC Company Tracker")
+    st.title("🎯 Smart GCC Company Tracker")
+    
+    # Initialize search engine
+    searcher = SmartCompanySearch()
     
     # Search interface
     col1, col2 = st.columns([3,1])
     with col1:
-        company_name = st.text_input("Enter company name", 
-                                   placeholder="e.g., Microsoft, Google, Amazon")
+        company_input = st.text_input(
+            "Enter company name (full or partial)",
+            placeholder="e.g., msft, google, amzn, etc."
+        )
     with col2:
         st.write("")
         st.write("")
         search = st.button("🔍 Search")
     
-    if company_name and search:
-        # Create progress bar
-        progress = st.progress(0)
-        status = st.empty()
-        
-        # Initialize results
-        company_data = []
-        people_data = []
-        
-        # Fetch company data
-        status.text("Searching company information...")
-        progress.progress(25)
-        
-        # Try LinkedIn
-        linkedin_data = fetch_linkedin_data(company_name)
-        if linkedin_data:
-            company_info = {
-                'Company Name': company_name,
-                'LinkedIn URL': f"https://www.linkedin.com/company/{quote(company_name)}/",
-                'Website': fetch_company_website(company_name),
-                'Type': 'GCC/Development Center'
-            }
-            company_data.append(company_info)
-        
-        progress.progress(50)
-        status.text("Searching key people...")
-        
-        # Search for people
-        people_soup = search_people(company_name)
-        if people_soup:
-            for person in people_soup.find_all('div', {'class': 'entity-result__item'}):
-                name_elem = person.find('span', {'class': 'entity-result__title-text'})
-                role_elem = person.find('div', {'class': 'entity-result__primary-subtitle'})
-                
-                if name_elem and role_elem:
-                    person_info = {
-                        'Name': name_elem.text.strip(),
-                        'Role': role_elem.text.strip(),
-                        'Company': company_name,
-                        'LinkedIn URL': f"https://www.linkedin.com/in/{name_elem.text.strip().lower().replace(' ', '-')}/"
-                    }
-                    people_data.append(person_info)
-        
-        progress.progress(75)
-        status.text("Processing results...")
-        
-        # Create DataFrames
-        company_df = pd.DataFrame(company_data)
-        people_df = pd.DataFrame(people_data)
-        
-        # Store in session state
-        st.session_state.search_results[company_name] = {
-            'company': company_df,
-            'people': people_df,
-            'timestamp': pd.Timestamp.now()
-        }
-        
-        progress.progress(100)
-        status.empty()
-        
-        # Display results in tabs
-        tab1, tab2 = st.tabs(["Company Information", "Key People"])
-        
-        with tab1:
-            if not company_df.empty:
-                st.dataframe(
-                    company_df,
-                    column_config={
-                        "LinkedIn URL": st.column_config.LinkColumn(),
-                        "Website": st.column_config.LinkColumn()
-                    },
-                    hide_index=True
-                )
-                
-                # Additional company info
-                st.subheader("Recent Updates")
-                st.markdown(f"""
-                - Company: {company_name}
-                - Location: India
-                - Last Updated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}
-                """)
-            else:
-                st.info("No company information found. Try a different search term.")
-        
-        with tab2:
-            if not people_df.empty:
-                # Add filters
-                roles = ['All'] + list(people_df['Role'].unique())
-                selected_role = st.selectbox("Filter by Role", roles)
-                
-                # Apply filter
-                if selected_role != 'All':
-                    filtered_df = people_df[people_df['Role'].str.contains(selected_role, case=False)]
-                else:
-                    filtered_df = people_df
-                
-                # Display results
-                st.dataframe(
-                    filtered_df,
-                    column_config={
-                        "LinkedIn URL": st.column_config.LinkColumn("Profile"),
-                        "Name": st.column_config.TextColumn(width="medium"),
-                        "Role": st.column_config.TextColumn(width="large")
-                    },
-                    hide_index=True
-                )
-            else:
-                st.info("No key people found. Try a different search term.")
-        
-        # Show search tips
-        with st.expander("Search Tips"):
-            st.markdown("""
-            ### For better results:
-            1. Use the complete company name
-            2. Try adding 'India' or 'GCC' to the company name
-            3. Search for major tech companies
+    if company_input and search:
+        with st.spinner("Searching... Please wait"):
+            # Create progress bar
+            progress = st.progress(0)
             
-            ### Example searches:
-            - Microsoft India
-            - Google Development Center
-            - Amazon Development Center India
-            """)
+            # Search company
+            progress.progress(25)
+            company_df = searcher.search_company(company_input)
+            
+            # Search executives
+            progress.progress(75)
+            people_df = searcher.search_executives(company_input)
+            
+            progress.progress(100)
+            
+            # Display results in tabs
+            tab1, tab2 = st.tabs(["Company Info", "Key Executives"])
+            
+            with tab1:
+                if not company_df.empty:
+                    st.success(f"Found company information for {company_df['Standard Name'].iloc[0]}")
+                    st.dataframe(
+                        company_df,
+                        column_config={
+                            "LinkedIn": st.column_config.LinkColumn()
+                        },
+                        hide_index=True
+                    )
+                else:
+                    st.warning("No company information found")
+            
+            with tab2:
+                if not people_df.empty:
+                    # Add filters
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        categories = ['All'] + list(people_df['Category'].unique())
+                        category_filter = st.selectbox("Filter by Category", categories)
+                    
+                    # Apply filters
+                    filtered_df = people_df
+                    if category_filter != 'All':
+                        filtered_df = filtered_df[filtered_df['Category'] == category_filter]
+                    
+                    st.dataframe(
+                        filtered_df,
+                        column_config={
+                            "LinkedIn": st.column_config.LinkColumn("Profile")
+                        },
+                        hide_index=True
+                    )
+                else:
+                    st.warning("No executive information found")
 
 if __name__ == "__main__":
     main()
